@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch and sort contributors (newest first)
+      - name: Fetch and sort contributors (earliest first, no bots)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -31,7 +31,9 @@ jobs:
               "User-Agent": "contributors-workflow"
           }
 
-          # Fetch all contributors (sorted by commit count desc by default)
+          BOT_LOGINS = {"dependabot", "dependabot[bot]", "github-actions", "github-actions[bot]", "copilot", "copilot[bot]"}
+
+          # Fetch all contributors
           contributors = []
           page = 1
           while True:
@@ -41,7 +43,13 @@ jobs:
                   data = json.loads(resp.read())
               if not data:
                   break
-              contributors.extend(data)
+              # Filter out bots by type and known bot usernames
+              for c in data:
+                  if c.get("type") == "Bot":
+                      continue
+                  if c["login"].lower() in BOT_LOGINS:
+                      continue
+                  contributors.append(c)
               page += 1
 
           # For each contributor, find their first commit date
@@ -57,10 +65,10 @@ jobs:
                   pass
               return ""
 
-          # Sort by first commit date descending (newest contributor first)
           for c in contributors:
               c["first_commit"] = get_first_commit_date(c["login"])
 
+          # Sort by first commit date descending (newest contributor first)
           contributors.sort(key=lambda c: c["first_commit"], reverse=True)
 
           # Build the table HTML (6 columns per row)
@@ -96,7 +104,7 @@ jobs:
           with open("README.md", "w") as f:
               f.write(new_content)
 
-          print(f"Updated {len(contributors)} contributors, newest first.")
+          print(f"Updated {len(contributors)} human contributors, earliest first.")
           EOF
 
       - name: Commit changes
