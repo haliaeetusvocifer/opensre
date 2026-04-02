@@ -74,13 +74,6 @@ make install
 opensre onboard
 opensre investigate -i tests/e2e/kubernetes/fixtures/datadog_k8s_alert.json
 ```
-
-**Choose a path:**
-
-- 🏃 **Local** - Run Tracer locally with a live Grafana environment, no cloud infra needed
-- ☁️ **Self-hosted** - Deploy to your own infrastructure for continuous monitoring
-- 🔌 **LangGraph** - Use Tracer as an agent in your existing AI stack (see [Agent Docs](https://tracer.cloud/docs))
-
 ---
 
 ## Why Open SRE?
@@ -93,7 +86,6 @@ Unlike closed SRE platforms, Tracer is **fully open source and self-hostable**. 
 
 > Whether you're an SRE triaging a P0, a platform engineer building internal tooling, a developer who just got paged, or an EM trying to reduce MTTR - Tracer works for your whole team.
 
-**Built in the open. Trusted in production.**
 
 ## How is Open SRE different?
 
