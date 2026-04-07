@@ -112,7 +112,7 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------
-  # Kubernetes tests: only run when k8s-related files change
+  # Kubernetes tests: only run on push to main, or PRs whose title contains 'k8s'/'kubernetes'
   # ---------------------------------------------------------------
   test-kubernetes:
     runs-on: ubuntu-latest
