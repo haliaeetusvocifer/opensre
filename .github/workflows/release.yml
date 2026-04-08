@@ -1,0 +1,340 @@
+name: Release
+
+on:
+  schedule:
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional tag to release (e.g. v2026.4.5). Defaults to today's vYYYY.M.D (UTC)."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            echo "tag_name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          year="$(date -u +%Y)"
+          month="$(date -u +%-m)"
+          day="$(date -u +%-d)"
+          echo "tag_name=v${year}.${month}.${day}" >> "$GITHUB_OUTPUT"
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: prepare
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: make lint
+
+      - name: Type check
+        run: make typecheck
+
+      - name: CLI smoke tests
+        run: make test-cli-smoke
+
+  build-python-dist:
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Build Python distributions
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python-dist
+          path: dist/*
+          if-no-files-found: error
+
+  build-binaries:
+    needs: [verify, prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x64
+            binary_name: opensre
+            archive_ext: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            binary_name: opensre
+            archive_ext: tar.gz
+          - runner: macos-15-intel
+            target: darwin-x64
+            binary_name: opensre
+            archive_ext: tar.gz
+          - runner: macos-latest
+            target: darwin-arm64
+            binary_name: opensre
+            archive_ext: tar.gz
+          - runner: windows-latest
+            target: windows-x64
+            binary_name: opensre.exe
+            archive_ext: zip
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install binary build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pyinstaller
+
+      - name: Build binary
+        run: pyinstaller packaging/opensre.spec --clean --noconfirm
+
+      - name: Smoke test binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ./dist/${{ matrix.binary_name }} --version
+          ./dist/${{ matrix.binary_name }} -h >/dev/null
+
+      - name: Smoke test binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ".\dist\${{ matrix.binary_name }}" --version
+          & ".\dist\${{ matrix.binary_name }}" -h | Out-Null
+
+      - name: Package binary archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION="${TAG_NAME#v}"
+          ASSET_BASENAME="opensre_${VERSION}_${{ matrix.target }}"
+          tar -C dist -czf "${ASSET_BASENAME}.tar.gz" "${{ matrix.binary_name }}"
+          shasum -a 256 "${ASSET_BASENAME}.tar.gz" > "${ASSET_BASENAME}.tar.gz.sha256"
+
+      - name: Package binary archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:TAG_NAME.TrimStart("v")
+          $assetBaseName = "opensre_${version}_${{ matrix.target }}"
+          Compress-Archive -Path "dist\${{ matrix.binary_name }}" -DestinationPath "${assetBaseName}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "${assetBaseName}.zip").Hash.ToLowerInvariant()
+          Set-Content -Path "${assetBaseName}.zip.sha256" -Value "$hash  ${assetBaseName}.zip"
+
+      - name: Upload binary archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            opensre_*_${{ matrix.target }}.${{ matrix.archive_ext }}
+            opensre_*_${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build-python-dist
+      - build-binaries
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${{ needs.prepare.outputs.tag_name }}"
+          default_branch="${{ github.event.repository.default_branch }}"
+
+          git fetch origin "$default_branch" --tags --force
+          target_sha="$(git rev-parse "origin/$default_branch")"
+
+          # Generate changelog including commit authors (contributors).
+          previous_tag="$(
+            git tag --list 'v[0-9][0-9][0-9][0-9].[0-9]*.[0-9]*' --sort=-v:refname \
+              | grep -v -x "$TAG_NAME" \
+              | head -n 1 \
+              || true
+          )"
+
+          range_spec="$target_sha"
+          if [ -n "$previous_tag" ]; then
+            range_spec="${previous_tag}..${target_sha}"
+          fi
+
+          {
+            echo "## Changelog"
+            echo
+            if [ -n "$previous_tag" ]; then
+              echo "_Changes since ${previous_tag}_"
+            else
+              echo "_Changes up to ${TAG_NAME}_"
+            fi
+            echo
+            git log "$range_spec" --no-merges --pretty='- %s (%h) — %an'
+            echo
+          } > GENERATED_CHANGELOG.md
+
+          GENERATED_NOTES="$(cat GENERATED_CHANGELOG.md)"
+
+          {
+            echo "## Install"
+            echo
+            echo "### cURL (macOS / Linux)"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.repository.default_branch }}/install.sh | bash"
+            echo '```'
+            echo
+            echo "### Homebrew (macOS / Linux)"
+            echo
+            echo '```bash'
+            echo "brew install ${{ github.repository }}/opensre"
+            echo '```'
+            echo
+            echo "### PowerShell (Windows)"
+            echo
+            echo '```powershell'
+            echo "irm https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.repository.default_branch }}/install.ps1 | iex"
+            echo '```'
+            echo
+            echo "### Python"
+            echo
+            echo '```bash'
+            echo "pipx install opensre"
+            echo '```'
+            echo
+            printf '%s\n' "$GENERATED_NOTES"
+          } > RELEASE_NOTES.md
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${{ needs.prepare.outputs.tag_name }}"
+          default_branch="${{ github.event.repository.default_branch }}"
+          git fetch origin "$default_branch" --tags --force
+          target_sha="$(git rev-parse "origin/$default_branch")"
+
+          if gh release view "$TAG_NAME" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists; nothing to do."
+            exit 0
+          fi
+
+          gh release create "$TAG_NAME" \
+            release-assets/* \
+            --repo "${{ github.repository }}" \
+            --target "$target_sha" \
+            --title "Latest" \
+            --notes-file RELEASE_NOTES.md
+
+      # - name: Update Homebrew formula
+      #   shell: bash
+      #   run: |
+      #     chmod +x scripts/render_homebrew_formula.sh
+      #     VERSION="${GITHUB_REF_NAME#v}"
+      #     REPO="${{ github.repository }}"
+      #     DARWIN_X64_SHA="$(cut -d' ' -f1 "release-assets/opensre_${VERSION}_darwin-x64.tar.gz.sha256")"
+      #     DARWIN_ARM64_SHA="$(cut -d' ' -f1 "release-assets/opensre_${VERSION}_darwin-arm64.tar.gz.sha256")"
+      #     LINUX_X64_SHA="$(cut -d' ' -f1 "release-assets/opensre_${VERSION}_linux-x64.tar.gz.sha256")"
+      #     LINUX_ARM64_SHA="$(cut -d' ' -f1 "release-assets/opensre_${VERSION}_linux-arm64.tar.gz.sha256")"
+      #     mkdir -p Formula
+      #     ./scripts/render_homebrew_formula.sh \
+      #       "$VERSION" \
+      #       "$REPO" \
+      #       "$DARWIN_X64_SHA" \
+      #       "$DARWIN_ARM64_SHA" \
+      #       "$LINUX_X64_SHA" \
+      #       "$LINUX_ARM64_SHA" > Formula/opensre.rb
+
+      # - name: Commit Homebrew formula update
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   shell: bash
+      #   run: |
+      #     if git diff --quiet -- Formula/opensre.rb; then
+      #       exit 0
+      #     fi
+
+      #     git config user.name "github-actions[bot]"
+      #     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      #     git add Formula/opensre.rb
+      #     git commit -m "chore: update Homebrew formula for ${GITHUB_REF_NAME}"
+      #     git push origin "HEAD:${{ github.event.repository.default_branch }}"

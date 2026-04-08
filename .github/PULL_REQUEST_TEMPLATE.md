@@ -1,6 +1,6 @@
 Fixes #
 
-<!-- Add issue number above -->
+<!-- Add issue number above --> 
 
 #### Describe the changes you have made in this PR -
 
@@ -22,7 +22,7 @@ Fixes #
 - [ ] I have modified the AI output to follow this project's coding standards and conventions
 
 **Explain your implementation approach:**
-<!--
+<!-- 
 Describe in your own words:
 - What problem does your code solve?
 - What alternative approaches did you consider?

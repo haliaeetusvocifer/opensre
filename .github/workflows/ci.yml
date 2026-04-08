@@ -3,8 +3,22 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'pytest.ini'
+      - 'Makefile'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'pytest.ini'
+      - 'Makefile'
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: read
@@ -15,24 +29,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---------------------------------------------------------------
-  # Gate: fast lint + typecheck (~30s) before expensive test jobs
-  # ---------------------------------------------------------------
-  lint:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Lint with ruff
         run: ruff check app/ tests/
@@ -86,18 +97,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Run pytest with coverage
+        env:
+          PYTEST_ADDOPTS: --ignore=tests/synthetic
         run: make test-cov
         continue-on-error: false
 
@@ -130,41 +143,41 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Run Kubernetes tests (kind cluster + real S3)
-        run: python -m tests.test_case_kubernetes.test_local
+        run: python -m tests.e2e.kubernetes.test_local
 
   # ---------------------------------------------------------------
   # Thorough E2E tests: main-branch only, gated behind core jobs
   # ---------------------------------------------------------------
   test-thorough:
     runs-on: ubuntu-latest
-    needs: [lint, test, typecheck]
+    needs: [quality, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: cloudwatch-demo
-            command: python3 -m tests.test_case_cloudwatch_demo.test_orchestrator
+            command: python3 -m tests.e2e.cloudwatch_demo.test_orchestrator
           - name: s3-failed-python
-            command: python3 -m tests.test_case_s3_failed_python_on_linux.test_orchestrator
+            command: python3 -m tests.e2e.s3_failed_python_on_linux.test_orchestrator
           - name: upstream-lambda
-            command: python3 -m tests.test_case_upstream_lambda.test_agent_e2e
+            command: python3 -m tests.e2e.upstream_lambda.test_agent_e2e
           - name: prefect-ecs-fargate
-            command: python3 -m tests.test_case_upstream_prefect_ecs_fargate.test_agent_e2e
+            command: python3 -m tests.e2e.upstream_prefect_ecs_fargate.test_agent_e2e
           - name: flink-ecs
-            command: python3 -m tests.test_case_upstream_apache_flink_ecs.test_agent_e2e
+            command: python3 -m tests.e2e.upstream_apache_flink_ecs.test_agent_e2e
     name: test-thorough (${{ matrix.name }})
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -196,16 +209,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Install tracer CLI
         run: |
