@@ -2,7 +2,9 @@
 
 import json
 from collections.abc import Callable
-from typing import Any
+
+from app.nodes.investigate.execution.execute_actions import ActionExecutionResult
+from app.nodes.investigate.types import ExecutedHypothesis, PlanAudit
 
 
 def _parse_vendor_audit_from_logs(logs: list) -> dict | None:
@@ -180,6 +182,46 @@ def _map_grafana_service_names(data: dict) -> dict:
     }
 
 
+def _map_eks_pods(data: dict) -> dict:
+    return {
+        "eks_pods": data.get("pods", []),
+        "eks_failing_pods": data.get("failing_pods", []),
+        "eks_high_restart_pods": data.get("high_restart_pods", []),
+        "eks_total_pods": data.get("total_pods", 0),
+    }
+
+
+def _map_eks_events(data: dict) -> dict:
+    return {
+        "eks_events": data.get("warning_events", []),
+        "eks_total_warning_count": data.get("total_warning_count", 0),
+    }
+
+
+def _map_eks_deployments(data: dict) -> dict:
+    return {
+        "eks_deployments": data.get("deployments", []),
+        "eks_degraded_deployments": data.get("degraded_deployments", []),
+        "eks_total_deployments": data.get("total_deployments", 0),
+    }
+
+
+def _map_eks_node_health(data: dict) -> dict:
+    return {
+        "eks_node_health": data.get("nodes", []),
+        "eks_not_ready_count": data.get("not_ready_count", 0),
+        "eks_total_nodes": data.get("total_nodes", 0),
+    }
+
+
+def _map_eks_pod_logs(data: dict) -> dict:
+    return {
+        "eks_pod_logs": data.get("logs", ""),
+        "eks_pod_logs_pod_name": data.get("pod_name", ""),
+        "eks_pod_logs_namespace": data.get("namespace", ""),
+    }
+
+
 def _map_datadog_logs(data: dict) -> dict:
     return {
         "datadog_logs": data.get("logs", []),
@@ -318,6 +360,11 @@ EVIDENCE_MAPPERS: dict[str, Callable[[dict], dict]] = {
     "query_grafana_metrics": _map_grafana_metrics,
     "query_grafana_alert_rules": _map_grafana_alert_rules,
     "query_grafana_service_names": _map_grafana_service_names,
+    "list_eks_pods": _map_eks_pods,
+    "get_eks_events": _map_eks_events,
+    "list_eks_deployments": _map_eks_deployments,
+    "get_eks_node_health": _map_eks_node_health,
+    "get_eks_pod_logs": _map_eks_pod_logs,
     "query_datadog_logs": _map_datadog_logs,
     "query_datadog_monitors": _map_datadog_monitors,
     "query_datadog_events": _map_datadog_events,
@@ -332,7 +379,10 @@ EVIDENCE_MAPPERS: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def merge_evidence(current_evidence: dict[str, Any], execution_results: dict) -> dict[str, Any]:
+def merge_evidence(
+    current_evidence: dict[str, object],
+    execution_results: dict[str, ActionExecutionResult],
+) -> dict[str, object]:
     """
     Merge execution results into evidence state.
 
@@ -361,12 +411,12 @@ def merge_evidence(current_evidence: dict[str, Any], execution_results: dict) ->
 
 
 def track_hypothesis(
-    executed_hypotheses: list[dict[str, Any]],
+    executed_hypotheses: list[ExecutedHypothesis],
     action_names: list[str],
     rationale: str,
     investigation_loop_count: int,
-    plan_audit: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
+    plan_audit: PlanAudit | None = None,
+) -> list[ExecutedHypothesis]:
     """
     Track executed hypothesis for deduplication and audit trail.
 
@@ -380,7 +430,7 @@ def track_hypothesis(
     Returns:
         Updated executed_hypotheses list with audit trail
     """
-    new_hypothesis: dict[str, Any] = {
+    new_hypothesis: ExecutedHypothesis = {
         "actions": action_names,
         "rationale": rationale,
         "loop_count": investigation_loop_count,
@@ -392,7 +442,7 @@ def track_hypothesis(
     return executed_hypotheses
 
 
-def build_evidence_summary(execution_results: dict) -> str:
+def build_evidence_summary(execution_results: dict[str, ActionExecutionResult]) -> str:
     """
     Build a summary of what evidence was collected.
 
@@ -440,6 +490,26 @@ def build_evidence_summary(execution_results: dict) -> str:
                 summary_parts.append(f"grafana:{len(data['rules'])} alert rules")
             elif action_name == "query_grafana_service_names" and data.get("service_names"):
                 summary_parts.append(f"grafana:{len(data['service_names'])} services")
+            elif action_name == "list_eks_pods" and data.get("pods") is not None:
+                failing = len(data.get("failing_pods", []))
+                summary_parts.append(f"eks:{data.get('total_pods', 0)} pods ({failing} failing)")
+            elif action_name == "get_eks_events" and data.get("warning_events") is not None:
+                summary_parts.append(
+                    f"eks:{data.get('total_warning_count', 0)} warning events"
+                )
+            elif action_name == "list_eks_deployments" and data.get("deployments") is not None:
+                degraded = len(data.get("degraded_deployments", []))
+                summary_parts.append(
+                    f"eks:{data.get('total_deployments', 0)} deployments ({degraded} degraded)"
+                )
+            elif action_name == "get_eks_node_health" and data.get("nodes") is not None:
+                not_ready = data.get("not_ready_count", 0)
+                summary_parts.append(
+                    f"eks:{data.get('total_nodes', 0)} nodes ({not_ready} not ready)"
+                )
+            elif action_name == "get_eks_pod_logs" and data.get("logs"):
+                line_count = len(str(data.get("logs", "")).splitlines())
+                summary_parts.append(f"eks:{line_count} log lines from {data.get('pod_name', '')}")
             elif action_name == "query_datadog_logs" and data.get("logs"):
                 error_count = len(data.get("error_logs", []))
                 summary_parts.append(f"datadog:{len(data['logs'])} logs ({error_count} errors)")
@@ -503,13 +573,13 @@ def build_evidence_summary(execution_results: dict) -> str:
 
 
 def summarize_execution_results(
-    execution_results: dict,
-    current_evidence: dict[str, Any],
-    executed_hypotheses: list[dict[str, Any]],
+    execution_results: dict[str, ActionExecutionResult],
+    current_evidence: dict[str, object],
+    executed_hypotheses: list[ExecutedHypothesis],
     investigation_loop_count: int,
     rationale: str,
-    plan_audit: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    plan_audit: PlanAudit | None = None,
+) -> tuple[dict[str, object], list[ExecutedHypothesis], str]:
     """
     Summarize execution results into evidence and hypotheses.
 
@@ -526,14 +596,18 @@ def summarize_execution_results(
     """
     evidence = merge_evidence(current_evidence, execution_results)
 
-    # Only track successful actions in hypothesis history (allow retries of failed actions)
+    # Only successes go into executed_hypotheses: planning filters out any name seen there,
+    # so recording failures would block retries for transient errors on any tool.
     successful_actions = [
-        action_name for action_name, result in execution_results.items() if result.success
+        name for name, result in execution_results.items() if result.success
     ]
-
     if successful_actions:
         executed_hypotheses = track_hypothesis(
-            executed_hypotheses, successful_actions, rationale, investigation_loop_count, plan_audit
+            executed_hypotheses,
+            successful_actions,
+            rationale,
+            investigation_loop_count,
+            plan_audit,
         )
 
     evidence_summary = build_evidence_summary(execution_results)
