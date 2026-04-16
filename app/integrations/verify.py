@@ -12,6 +12,7 @@ import requests
 
 from app.auth.jwt_auth import extract_org_id_from_jwt
 from app.config import get_tracer_base_url
+from app.integrations.azure_sql import build_azure_sql_config, validate_azure_sql_config
 from app.integrations.github_mcp import build_github_mcp_config, validate_github_mcp_config
 from app.integrations.mariadb import build_mariadb_config, validate_mariadb_config
 from app.integrations.models import (
@@ -54,6 +55,7 @@ SUPPORTED_VERIFY_SERVICES = (
     "sentry",
     "mongodb",
     "postgresql",
+    "azure_sql",
     "mongodb_atlas",
     "mariadb",
     "google_docs",
@@ -279,6 +281,33 @@ def resolve_effective_integrations() -> dict[str, dict[str, Any]]:
                 },
             }
 
+    azure_sql_integration = classified_integrations.get("azure_sql")
+    if isinstance(azure_sql_integration, dict):
+        effective["azure_sql"] = {
+            "source": source_by_service.get("azure_sql", "local env"),
+            "config": azure_sql_integration,
+        }
+    else:
+        az_server = os.getenv("AZURE_SQL_SERVER", "").strip()
+        az_database = os.getenv("AZURE_SQL_DATABASE", "").strip()
+        if az_server and az_database:
+            _az_port = os.getenv("AZURE_SQL_PORT", "").strip()
+            effective["azure_sql"] = {
+                "source": "local env",
+                "config": {
+                    "server": az_server,
+                    "port": int(_az_port) if _az_port.isdigit() else 1433,
+                    "database": az_database,
+                    "username": os.getenv("AZURE_SQL_USERNAME", "").strip(),
+                    "password": os.getenv("AZURE_SQL_PASSWORD", "").strip(),
+                    "driver": os.getenv(
+                        "AZURE_SQL_DRIVER", "ODBC Driver 18 for SQL Server"
+                    ).strip(),
+                    "encrypt": os.getenv("AZURE_SQL_ENCRYPT", "true").strip().lower()
+                    in ("true", "1", "yes"),
+                },
+            }
+
     mongodb_atlas_integration = classified_integrations.get("mongodb_atlas")
     if isinstance(mongodb_atlas_integration, dict):
         effective["mongodb_atlas"] = {
@@ -476,7 +505,8 @@ def resolve_effective_integrations() -> dict[str, dict[str, Any]]:
                     "bot_token": discord_bot_token,
                     "application_id": os.getenv("DISCORD_APPLICATION_ID", "").strip(),
                     "public_key": os.getenv("DISCORD_PUBLIC_KEY", "").strip(),
-                    "default_channel_id": os.getenv("DISCORD_DEFAULT_CHANNEL_ID", "").strip() or None,
+                    "default_channel_id": os.getenv("DISCORD_DEFAULT_CHANNEL_ID", "").strip()
+                    or None,
                 },
             }
 
@@ -801,6 +831,17 @@ def _verify_postgresql(source: str, config: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def _verify_azure_sql(source: str, config: dict[str, Any]) -> dict[str, str]:
+    azure_sql_config = build_azure_sql_config(config)
+    result = validate_azure_sql_config(azure_sql_config)
+    return _result(
+        "azure_sql",
+        source,
+        "passed" if result.ok else "failed",
+        result.detail,
+    )
+
+
 def _verify_mongodb_atlas(source: str, config: dict[str, Any]) -> dict[str, str]:
     atlas_config = build_mongodb_atlas_config(config)
     result = validate_mongodb_atlas_config(atlas_config)
@@ -1050,6 +1091,8 @@ def verify_integrations(
             results.append(_verify_mongodb(source, config))
         elif current_service == "postgresql":
             results.append(_verify_postgresql(source, config))
+        elif current_service == "azure_sql":
+            results.append(_verify_azure_sql(source, config))
         elif current_service == "mongodb_atlas":
             results.append(_verify_mongodb_atlas(source, config))
         elif current_service == "mariadb":
