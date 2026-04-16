@@ -159,12 +159,13 @@ def _get_connection(config: AzureSQLConfig) -> Any:
     import pyodbc
 
     encrypt_value = "yes" if config.encrypt else "no"
+    _esc = lambda v: str(v).replace("}", "}}")  # noqa: E731
     conn_str = (
         f"DRIVER={{{config.driver}}};"
         f"SERVER={config.server},{config.port};"
         f"DATABASE={config.database};"
-        f"UID={config.username};"
-        f"PWD={config.password};"
+        f"UID={{{_esc(config.username)}}};"
+        f"PWD={{{_esc(config.password)}}};"
         f"Encrypt={encrypt_value};"
         f"TrustServerCertificate=no;"
         f"Connection Timeout={int(config.timeout_seconds)};"
@@ -351,7 +352,7 @@ def get_current_queries(
                     LEFT(t.text, 500) as query_text
                 FROM sys.dm_exec_requests r
                 JOIN sys.dm_exec_sessions s ON r.session_id = s.session_id
-                CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+                OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
                 WHERE s.is_user_process = 1
                     AND DATEDIFF(SECOND, r.start_time, GETDATE()) >= ?
                 ORDER BY r.start_time ASC
@@ -452,7 +453,8 @@ def get_resource_stats(
                 max_io = max(s["avg_data_io_percent"] for s in samples)
                 max_log = max(s["avg_log_write_percent"] for s in samples)
                 max_workers = max(s["max_worker_percent"] for s in samples)
-                peak = max(max_cpu, max_io, max_log, max_workers)
+                max_memory = max(s["avg_memory_usage_percent"] for s in samples)
+                peak = max(max_cpu, max_io, max_log, max_workers, max_memory)
                 if peak >= 95:
                     throttling_risk = "critical"
                 elif peak >= 80:
@@ -509,7 +511,7 @@ def get_slow_queries(
                     qs.total_logical_writes,
                     qs.total_worker_time / 1000.0 as total_cpu_ms
                 FROM sys.dm_exec_query_stats qs
-                CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t
+                OUTER APPLY sys.dm_exec_sql_text(qs.sql_handle) t
                 WHERE (qs.total_elapsed_time / qs.execution_count) / 1000.0 >= ?
                 ORDER BY avg_time_ms DESC
             """,

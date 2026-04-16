@@ -571,7 +571,7 @@ def _setup_azure_sql() -> None:
         {
             "credentials": {
                 "server": server,
-                "port": int(port) if port.isdigit() else 1433,
+                "port": _parse_port(port, default=1433),
                 "database": database,
                 "username": username,
                 "password": password,
