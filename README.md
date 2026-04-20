@@ -619,6 +619,13 @@ Thanks goes to these amazing people:
             <sub><b>gbsierra</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/alexanderkreidich">
+            <img src="https://avatars.githubusercontent.com/u/126781073?v=4" width="100" alt="alexanderkreidich"/>
+            <br />
+            <sub><b>alexanderkreidich</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
