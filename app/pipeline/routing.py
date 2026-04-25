@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import logging
 
+from app.investigation_constants import MAX_INVESTIGATION_LOOPS
 from app.output import debug_print
 from app.state import AgentState, InvestigationState
 
 logger = logging.getLogger(__name__)
-
-MAX_INVESTIGATION_LOOPS = 4
 
 
 def route_by_mode(state: AgentState) -> str:
@@ -28,8 +27,13 @@ def route_after_extract(state: AgentState) -> str:
 
 
 def route_investigation_loop(state: AgentState) -> str:
-    """Decide whether to continue investigation loop."""
-    return should_continue_investigation(state)
+    """Decide whether to continue investigation loop, run OpenRCA eval, or publish."""
+    nxt = should_continue_investigation(state)
+    if nxt == "investigate":
+        return "investigate"
+    if state.get("opensre_evaluate") and (state.get("opensre_eval_rubric") or "").strip():
+        return "opensre_eval"
+    return "publish"
 
 
 def should_call_tools(state: AgentState) -> str:

@@ -8,13 +8,15 @@ the same set of keys and will fail if they diverge.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any
 
 from langgraph.graph import add_messages
 from pydantic import ConfigDict, Field
+from typing_extensions import TypedDict
 
 from app.state.types import AgentMode, ChatMessageModel
 from app.strict_config import StrictConfigModel
+from app.types.retrieval import RetrievalControlsMap
 
 
 class AgentState(TypedDict, total=False):
@@ -52,6 +54,7 @@ class AgentState(TypedDict, total=False):
     # Investigation planning
     planned_actions: list[str]
     plan_rationale: str
+    retrieval_controls: RetrievalControlsMap | None
     available_sources: dict[str, dict]
     available_action_names: list[str]
 
@@ -81,11 +84,17 @@ class AgentState(TypedDict, total=False):
     executed_hypotheses: list[dict[str, Any]]
     investigation_started_at: float
 
+    # Placeholder→original map for reversible infrastructure identifier masking
+    masking_map: dict[str, str]
+
     # Slack context (when triggered from Slack message)
     slack_context: dict[str, Any]
 
     # Discord context (when triggered from Discord interaction)
     discord_context: dict[str, Any]
+
+    # Telegram context (when triggered from Telegram message)
+    telegram_context: dict[str, Any]
 
     # LangGraph context (injected from config by inject_auth_node)
     thread_id: str
@@ -98,6 +107,11 @@ class AgentState(TypedDict, total=False):
     summary: str
     problem_report: dict[str, Any]
     report: str
+
+    # OpenRCA offline rubric eval (``opensre investigate --evaluate``)
+    opensre_evaluate: bool
+    opensre_eval_rubric: str
+    opensre_llm_eval: dict[str, Any]
 
 
 InvestigationState = AgentState
@@ -121,10 +135,11 @@ class AgentStateModel(StrictConfigModel):
     pipeline_name: str = ""
     severity: str = ""
     alert_source: str = ""
-    raw_alert: str | dict[str, Any] = Field(default_factory=dict)
+    raw_alert: str | dict[str, Any] = Field(default_factory=lambda: {})
     alert_json: dict[str, Any] = Field(default_factory=dict)
     planned_actions: list[str] = Field(default_factory=list)
     plan_rationale: str = ""
+    retrieval_controls: RetrievalControlsMap | None = None
     available_sources: dict[str, dict[str, Any]] = Field(default_factory=dict)
     available_action_names: list[str] = Field(default_factory=list)
     tool_budget: int = Field(
@@ -147,8 +162,10 @@ class AgentStateModel(StrictConfigModel):
     hypotheses: list[str] = Field(default_factory=list)
     executed_hypotheses: list[dict[str, Any]] = Field(default_factory=list)
     investigation_started_at: float = 0.0
+    masking_map: dict[str, str] = Field(default_factory=dict)
     slack_context: dict[str, Any] = Field(default_factory=dict)
     discord_context: dict[str, Any] = Field(default_factory=dict)
+    telegram_context: dict[str, Any] = Field(default_factory=dict)
     thread_id: str = ""
     run_id: str = ""
     auth_token: str = Field(default="", alias="_auth_token", exclude=True)
@@ -157,3 +174,6 @@ class AgentStateModel(StrictConfigModel):
     summary: str = ""
     problem_report: dict[str, Any] = Field(default_factory=dict)
     report: str = ""
+    opensre_evaluate: bool = False
+    opensre_eval_rubric: str = ""
+    opensre_llm_eval: dict[str, Any] = Field(default_factory=dict)

@@ -7,6 +7,7 @@ import pytest
 
 from app.cli.wizard.integration_health import (
     validate_aws_integration,
+    validate_betterstack_integration,
     validate_coralogix_integration,
     validate_datadog_integration,
     validate_discord_bot,
@@ -17,6 +18,8 @@ from app.cli.wizard.integration_health import (
     validate_slack_webhook,
     validate_vercel_integration,
 )
+from app.integrations.betterstack import BetterStackValidationResult
+from app.integrations.github_mcp import GitHubMCPValidationResult
 
 
 class _FakeGrafanaClient:
@@ -182,7 +185,10 @@ def test_validate_aws_integration_succeeds_with_role_assumption(monkeypatch) -> 
 
     class _FakeAssumedSts:
         def get_caller_identity(self) -> dict[str, str]:
-            return {"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/demo/session"}
+            return {
+                "Account": "123456789012",
+                "Arn": "arn:aws:sts::123456789012:assumed-role/demo/session",
+            }
 
     def _client(service_name: str, **kwargs):
         if service_name != "sts":
@@ -226,7 +232,14 @@ def test_validate_aws_integration_fails_when_boto3_client_raises(monkeypatch) ->
 def test_validate_github_mcp_integration_uses_shared_validator(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.cli.wizard.integration_health.validate_github_mcp_config",
-        lambda _config: types.SimpleNamespace(ok=True, detail="GitHub MCP ok"),
+        lambda _config, **_kwargs: GitHubMCPValidationResult(
+            ok=True,
+            detail="OK @ghuser; repos=1; owners=o; examples=o/r; mcp_tools=1",
+            authenticated_user="ghuser",
+            repo_access_count=1,
+            repo_access_scope_owners=("o",),
+            repo_access_samples=("o/r",),
+        ),
     )
 
     result = validate_github_mcp_integration(
@@ -237,7 +250,11 @@ def test_validate_github_mcp_integration_uses_shared_validator(monkeypatch) -> N
     )
 
     assert result.ok is True
-    assert result.detail == "GitHub MCP ok"
+    assert "Configuration validation: succeeded" in result.detail
+    assert "GitHub identity: @ghuser" in result.detail
+    assert "Repositories returned (probe): 1" in result.detail
+    assert result.github_mcp is not None
+    assert result.github_mcp.authenticated_user == "ghuser"
 
 
 def test_validate_sentry_integration_uses_shared_validator(monkeypatch) -> None:
@@ -274,7 +291,9 @@ class _FakeVercelClient:
 def test_validate_vercel_integration_succeeds(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.cli.wizard.integration_health.VercelClient",
-        lambda _config: _FakeVercelClient({"success": True, "projects": [{"id": "p1"}], "total": 1}),
+        lambda _config: _FakeVercelClient(
+            {"success": True, "projects": [{"id": "p1"}], "total": 1}
+        ),
     )
 
     result = validate_vercel_integration(api_token="tok_test")
@@ -391,3 +410,47 @@ def test_validate_discord_bot_network_error(monkeypatch: pytest.MonkeyPatch) -> 
     result = validate_discord_bot(bot_token="some-token")
     assert result.ok is False
     assert "unreachable" in result.detail.lower()
+
+
+def test_validate_betterstack_integration_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.cli.wizard.integration_health.validate_betterstack_config",
+        lambda _config: BetterStackValidationResult(ok=True, detail="Connected."),
+    )
+    result = validate_betterstack_integration(
+        query_endpoint="https://eu-nbg-2-connect.betterstackdata.com",
+        username="u",
+        password="p",
+        sources=["t1_myapp"],
+    )
+    assert result.ok is True
+    assert result.detail == "Connected."
+
+
+def test_validate_betterstack_integration_forwards_failure_detail(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.cli.wizard.integration_health.validate_betterstack_config",
+        lambda _config: BetterStackValidationResult(
+            ok=False, detail="Better Stack authentication failed."
+        ),
+    )
+    result = validate_betterstack_integration(
+        query_endpoint="https://x",
+        username="u",
+        password="wrong",
+    )
+    assert result.ok is False
+    assert "authentication" in result.detail.lower()
+
+
+def test_validate_betterstack_integration_accepts_empty_tables() -> None:
+    # Tables are optional; calling with no tables must not crash and must not
+    # call network (covered by the probe-level tests separately).
+    result = validate_betterstack_integration(
+        query_endpoint="",
+        username="",
+        password="",
+    )
+    # Empty config returns the "required" detail from the underlying probe.
+    assert result.ok is False
+    assert "required" in result.detail.lower()

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -88,14 +90,17 @@ class TestMariaDBBuild:
         assert config.username == "admin"
         assert config.ssl is False
 
-    @patch.dict(os.environ, {
-        "MARIADB_HOST": "env-host",
-        "MARIADB_PORT": "3307",
-        "MARIADB_DATABASE": "env-db",
-        "MARIADB_USERNAME": "env-user",
-        "MARIADB_PASSWORD": "env-pass",
-        "MARIADB_SSL": "false",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "MARIADB_HOST": "env-host",
+            "MARIADB_PORT": "3307",
+            "MARIADB_DATABASE": "env-db",
+            "MARIADB_USERNAME": "env-user",
+            "MARIADB_PASSWORD": "env-pass",
+            "MARIADB_SSL": "false",
+        },
+    )
     def test_mariadb_config_from_env(self):
         config = mariadb_config_from_env()
         assert config is not None
@@ -161,7 +166,7 @@ class TestResolveIntegrations:
                     "database": "prod",
                     "username": "admin",
                     "password": "secret",
-                }
+                },
             }
         ]
         resolved = _classify_integrations(integrations)
@@ -180,7 +185,7 @@ class TestResolveIntegrations:
                     "host": "",
                     "database": "prod",
                     "username": "admin",
-                }
+                },
             }
         ]
         resolved = _classify_integrations(integrations)
@@ -196,7 +201,7 @@ class TestResolveIntegrations:
                     "host": "db.example.com",
                     "database": "",
                     "username": "admin",
-                }
+                },
             }
         ]
         resolved = _classify_integrations(integrations)
@@ -240,7 +245,10 @@ class TestTruncate:
 
 class TestMariaDBIsAvailable:
     def test_true_with_host_and_database(self) -> None:
-        assert mariadb_is_available({"mariadb": {"host": "db.example.com", "database": "prod"}}) is True
+        assert (
+            mariadb_is_available({"mariadb": {"host": "db.example.com", "database": "prod"}})
+            is True
+        )
 
     def test_false_when_missing_host(self) -> None:
         assert mariadb_is_available({"mariadb": {"host": "", "database": "prod"}}) is False
@@ -260,8 +268,16 @@ class TestMariaDBIsAvailable:
 
 class TestMariaDBExtractParams:
     def test_all_fields_returned(self) -> None:
-        sources = {"mariadb": {"host": "h", "database": "d", "username": "u",
-                               "password": "p", "port": 3307, "ssl": False}}
+        sources = {
+            "mariadb": {
+                "host": "h",
+                "database": "d",
+                "username": "u",
+                "password": "p",
+                "port": 3307,
+                "ssl": False,
+            }
+        }
         params = mariadb_extract_params(sources)
         assert params["host"] == "h"
         assert params["database"] == "d"
@@ -511,9 +527,19 @@ class TestGetReplicationStatus:
 
     @patch("app.integrations.mariadb._get_connection")
     def test_returns_channels_on_success(self, mock_get_conn: MagicMock) -> None:
-        columns = ["Slave_IO_Running", "Slave_SQL_Running", "Seconds_Behind_Master",
-                   "Last_Error", "Last_Errno", "Master_Host", "Master_Port",
-                   "Master_Log_File", "Relay_Log_Space", "Exec_Master_Log_Pos", "Connection_name"]
+        columns = [
+            "Slave_IO_Running",
+            "Slave_SQL_Running",
+            "Seconds_Behind_Master",
+            "Last_Error",
+            "Last_Errno",
+            "Master_Host",
+            "Master_Port",
+            "Master_Log_File",
+            "Relay_Log_Space",
+            "Exec_Master_Log_Pos",
+            "Connection_name",
+        ]
         row = ("Yes", "Yes", 0, "", 0, "primary.db", 3306, "binlog.000001", 1024, 512, "")
         mock_conn, _ = _make_mock_conn(
             fetchall_rows=[row],
@@ -544,32 +570,47 @@ class TestGetReplicationStatus:
 
     @patch("app.integrations.mariadb._get_connection")
     def test_fallback_to_show_slave_status(self, mock_get_conn: MagicMock) -> None:
-        import pymysql
+        # Stub pymysql so this test does not require PyMySQL at import time (matches the
+        # dynamic `import pymysql` inside get_replication_status error handling).
+        class _ProgrammingError(Exception):
+            pass
 
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        columns = ["Slave_IO_Running", "Slave_SQL_Running"]
-        row = ("Yes", "Yes")
-        execute_call_count = 0
+        _fake_err = types.ModuleType("pymysql.err")
+        _fake_err.ProgrammingError = _ProgrammingError
+        _fake_pymysql = types.ModuleType("pymysql")
+        _fake_pymysql.err = _fake_err
+        _prior = sys.modules.get("pymysql")
+        sys.modules["pymysql"] = _fake_pymysql
+        try:
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            columns = ["Slave_IO_Running", "Slave_SQL_Running"]
+            row = ("Yes", "Yes")
+            execute_call_count = 0
 
-        def execute_side_effect(stmt: str, *args: object, **kwargs: object) -> None:
-            nonlocal execute_call_count
-            execute_call_count += 1
-            if "ALL SLAVES" in stmt:
-                raise pymysql.err.ProgrammingError(1064, "syntax error")
+            def execute_side_effect(stmt: str, *args: object, **kwargs: object) -> None:
+                nonlocal execute_call_count
+                execute_call_count += 1
+                if "ALL SLAVES" in stmt:
+                    raise _ProgrammingError(1064, "syntax error")
 
-        mock_cursor.execute.side_effect = execute_side_effect
-        mock_cursor.fetchall.return_value = [row]
-        mock_cursor.description = [(col,) for col in columns]
-        mock_conn.cursor.return_value.__enter__ = lambda _self: mock_cursor
-        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-        mock_get_conn.return_value = mock_conn
+            mock_cursor.execute.side_effect = execute_side_effect
+            mock_cursor.fetchall.return_value = [row]
+            mock_cursor.description = [(col,) for col in columns]
+            mock_conn.cursor.return_value.__enter__ = lambda _self: mock_cursor
+            mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+            mock_get_conn.return_value = mock_conn
 
-        result = get_replication_status(self._config())
+            result = get_replication_status(self._config())
 
-        assert result["available"] is True
-        assert len(result["channels"]) == 1
-        assert execute_call_count == 2
+            assert result["available"] is True
+            assert len(result["channels"]) == 1
+            assert execute_call_count == 2
+        finally:
+            if _prior is not None:
+                sys.modules["pymysql"] = _prior
+            else:
+                sys.modules.pop("pymysql", None)
 
     @patch("app.integrations.mariadb._get_connection")
     def test_partial_columns_handled(self, mock_get_conn: MagicMock) -> None:

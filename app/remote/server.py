@@ -12,17 +12,17 @@ Start with::
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json as _json
 import logging
 import os
 import re
+import secrets
 import shutil
 import time
 import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -55,7 +55,13 @@ from app.version import get_version
 load_dotenv(override=False)
 
 INVESTIGATIONS_DIR = Path(os.getenv("INVESTIGATIONS_DIR", "/opt/opensre/investigations"))
-_AUTH_KEY = os.getenv("OPENSRE_API_KEY", "")
+_AUTH_KEY = os.getenv("OPENSRE_API_KEY")
+_AUTH_EXEMPT_PATHS = {
+    "/discord/interactions",
+    "/health/deep",
+    "/ok",
+    "/version",
+}
 _STARTED_AT = datetime.now(tz=UTC)
 _START_TIME_MONOTONIC = time.monotonic()
 _INSTANCE_METADATA: dict[str, str | None] = {
@@ -66,9 +72,18 @@ _INSTANCE_METADATA: dict[str, str | None] = {
 logger = logging.getLogger(__name__)
 
 
-def _check_api_key(x_api_key: str | None = Header(default=None)) -> None:
-    """Reject requests when OPENSRE_API_KEY is set and the header doesn't match."""
-    if _AUTH_KEY and x_api_key != _AUTH_KEY:
+def _configured_auth_key() -> str | None:
+    auth_key = (_AUTH_KEY or "").strip()
+    return auth_key or None
+
+
+def _check_api_key(request: Request, x_api_key: str | None = Header(default=None)) -> None:
+    """Reject protected remote API requests unless a valid API key is configured."""
+    if request.url.path in _AUTH_EXEMPT_PATHS:
+        return
+
+    auth_key = _configured_auth_key()
+    if auth_key is None or not secrets.compare_digest(x_api_key or "", auth_key):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
@@ -76,17 +91,22 @@ def _check_api_key(x_api_key: str | None = Header(default=None)) -> None:
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     INVESTIGATIONS_DIR.mkdir(parents=True, exist_ok=True)
     _refresh_instance_metadata()
-    poller = VercelPoller(investigations_dir=INVESTIGATIONS_DIR)
+
     poller_task: asyncio.Task[None] | None = None
+    poller = VercelPoller(investigations_dir=INVESTIGATIONS_DIR)
     if poller.is_enabled:
-        poller_task = asyncio.create_task(_run_vercel_poller(poller))
+        poller_task = asyncio.create_task(
+            poller.run_forever(_handle_polled_candidate),
+            name="vercel-poller",
+        )
+
     try:
         yield
     finally:
         if poller_task is not None:
             poller_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller_task
+            with suppress(asyncio.CancelledError):
+                await poller_task  # noqa: B018  -- intentional await for clean shutdown
 
 
 app = FastAPI(
@@ -141,12 +161,14 @@ class DeepHealthCheck(BaseModel):
     status: str
     detail: str
 
+
 # ---------------------------------------------------------------------------
 # Discord helpers
 # ---------------------------------------------------------------------------
 
 _DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
 _DISCORD_APPLICATION_ID = os.getenv("DISCORD_APPLICATION_ID", "")
+_DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 
 
 def _verify_discord_signature(body: bytes, signature: str, timestamp: str) -> None:
@@ -176,9 +198,13 @@ def _discord_post_followup(
     if embeds:
         payload["embeds"] = embeds
     try:
+        headers: dict[str, str] = {}
+        if _DISCORD_BOT_TOKEN:
+            headers["Authorization"] = f"Bot {_DISCORD_BOT_TOKEN}"
         resp = httpx.post(
             f"https://discord.com/api/v10/webhooks/{application_id}/{interaction_token}",
             json=payload,
+            headers=headers or None,
             timeout=15.0,
         )
         if resp.status_code not in (200, 204):
@@ -241,9 +267,7 @@ async def _run_discord_investigation(interaction: DiscordInteraction) -> None:
     # Post via interaction followup webhook (the deferred response requires this)
     app_id = interaction.application_id or _DISCORD_APPLICATION_ID
     if app_id and interaction.token:
-        await asyncio.to_thread(
-            _discord_post_followup, app_id, interaction.token, embeds=[embed]
-        )
+        await asyncio.to_thread(_discord_post_followup, app_id, interaction.token, embeds=[embed])
 
 
 # ---------------------------------------------------------------------------
@@ -252,9 +276,7 @@ async def _run_discord_investigation(interaction: DiscordInteraction) -> None:
 
 
 @discord_router.post("/discord/interactions")
-async def discord_interactions(
-    request: Request, background_tasks: BackgroundTasks
-) -> Response:
+async def discord_interactions(request: Request, background_tasks: BackgroundTasks) -> Response:
     body = await request.body()
     sig = request.headers.get("X-Signature-Ed25519", "")
     ts = request.headers.get("X-Signature-Timestamp", "")
@@ -471,11 +493,6 @@ async def _handle_polled_candidate(candidate: VercelInvestigationCandidate) -> b
     return True
 
 
-async def _run_vercel_poller(poller: VercelPoller) -> None:
-    """Run the Vercel poller in background lifecycle task."""
-    await poller.run_forever(_handle_polled_candidate)
-
-
 @app.get("/investigations", response_model=list[InvestigationMeta])
 def list_investigations() -> list[InvestigationMeta]:
     """List all persisted investigation ``.md`` files."""
@@ -510,7 +527,7 @@ def get_investigation(inv_id: str) -> Response:
 # ---------------------------------------------------------------------------
 
 
-_SAFE_INV_ID = re.compile(r"[\w\-]+")
+_SAFE_INV_ID = re.compile(r"^[\w\-]+\Z")
 
 
 def _safe_investigation_path(inv_id: str) -> Path:
@@ -641,7 +658,8 @@ def _check_memory_health() -> DeepHealthCheck:
 
 def _make_id(alert_name: str) -> str:
     ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
-    return f"{ts}_{_slugify(alert_name)}"
+    slug = _slugify(alert_name) or "investigation"
+    return f"{ts}_{slug}"
 
 
 def _id_to_iso(inv_id: str) -> str:

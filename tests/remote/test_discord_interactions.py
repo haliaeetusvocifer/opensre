@@ -10,6 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from nacl.signing import SigningKey
 
+_INTERACTION_TOKEN = "test-interaction-token"  # noqa: S105
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -22,7 +24,11 @@ def _make_client() -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _sign_body(signing_key: SigningKey, body: bytes, timestamp: str = "1234567890") -> dict[str, str]:
+def _sign_body(
+    signing_key: SigningKey,
+    body: bytes,
+    timestamp: str = "1234567890",
+) -> dict[str, str]:
     """Return headers signed with the given nacl SigningKey."""
     signed = signing_key.sign(timestamp.encode() + body)
     signature = signed.signature.hex()
@@ -97,12 +103,33 @@ def test_discord_interactions_ping_returns_type_1(monkeypatch: pytest.MonkeyPatc
     assert resp.json() == {"type": 1}
 
 
+def test_discord_interactions_do_not_require_api_key_when_remote_auth_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signing_key = SigningKey.generate()
+    monkeypatch.setattr(
+        "app.remote.server._DISCORD_PUBLIC_KEY",
+        signing_key.verify_key.encode().hex(),
+    )
+    monkeypatch.setattr("app.remote.server._AUTH_KEY", "secret-key")
+    client = _make_client()
+
+    body = json.dumps({"type": 1}).encode()
+    headers = _sign_body(signing_key, body)
+    resp = client.post("/discord/interactions", content=body, headers=headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"type": 1}
+
+
 # ---------------------------------------------------------------------------
 # APPLICATION_COMMAND (type 2)
 # ---------------------------------------------------------------------------
 
 
-def test_discord_interactions_command_returns_deferred_type_5(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discord_interactions_command_returns_deferred_type_5(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     signing_key = SigningKey.generate()
     monkeypatch.setattr(
         "app.remote.server._DISCORD_PUBLIC_KEY",
@@ -156,7 +183,7 @@ async def test_run_discord_investigation_posts_followup_on_success(
 
     interaction = DiscordInteraction(
         type=2,
-        token="tok",
+        token=_INTERACTION_TOKEN,
         application_id="app-id",
         channel_id="chan-1",
         data={"options": [{"name": "alert", "value": '{"alert_name": "CPU spike"}'}]},
@@ -173,8 +200,10 @@ async def test_run_discord_investigation_posts_followup_on_success(
     def _fake_execute(**_kw: Any) -> tuple[dict[str, Any], str, str, str]:
         return fake_result, "CPU spike", "default", "high"
 
-    def _fake_followup(app_id: str, token: str, *, embeds: list[dict[str, Any]] | None = None, **_kw: Any) -> None:
-        posted_followups.append({"app_id": app_id, "token": token, "embeds": embeds})
+    def _fake_followup(
+        app_id: str, tok: str, *, embeds: list[dict[str, Any]] | None = None, **_kw: Any
+    ) -> None:
+        posted_followups.append({"app_id": app_id, "token": tok, "embeds": embeds})
 
     monkeypatch.setattr("app.remote.server._execute_investigation", _fake_execute)
     monkeypatch.setattr("app.remote.server._discord_post_followup", _fake_followup)
@@ -182,7 +211,7 @@ async def test_run_discord_investigation_posts_followup_on_success(
     await _run_discord_investigation(interaction)
 
     assert len(posted_followups) == 1
-    assert posted_followups[0]["token"] == "tok"
+    assert posted_followups[0]["token"] == _INTERACTION_TOKEN
     embed = posted_followups[0]["embeds"][0]
     assert "CPU spike" in embed["title"]
     assert embed["footer"]["text"] == "OpenSRE Investigation"
@@ -196,7 +225,7 @@ async def test_run_discord_investigation_parses_plain_text_alert(
 
     interaction = DiscordInteraction(
         type=2,
-        token="tok",
+        token=_INTERACTION_TOKEN,
         application_id="app-id",
         data={"options": [{"name": "alert", "value": "plain text alert description"}]},
     )
@@ -205,7 +234,12 @@ async def test_run_discord_investigation_parses_plain_text_alert(
 
     def _fake_execute(**kwargs: Any) -> tuple[dict[str, Any], str, str, str]:
         captured_kwargs.update(kwargs)
-        return {"root_cause": "x", "report": "y", "is_noise": False}, "plain text alert description", "", ""
+        return (
+            {"root_cause": "x", "report": "y", "is_noise": False},
+            "plain text alert description",
+            "",
+            "",
+        )
 
     monkeypatch.setattr("app.remote.server._execute_investigation", _fake_execute)
     monkeypatch.setattr("app.remote.server._discord_post_followup", lambda *_a, **_kw: None)
@@ -226,7 +260,7 @@ async def test_run_discord_investigation_posts_failure_message_on_exception(
 
     interaction = DiscordInteraction(
         type=2,
-        token="tok",
+        token=_INTERACTION_TOKEN,
         application_id="app-id",
         data={"options": [{"name": "alert", "value": "{}"}]},
     )
@@ -256,7 +290,7 @@ async def test_run_discord_investigation_noise_uses_grey_color(
 
     interaction = DiscordInteraction(
         type=2,
-        token="tok",
+        token=_INTERACTION_TOKEN,
         application_id="app-id",
         data={"options": [{"name": "alert", "value": "{}"}]},
     )
@@ -266,7 +300,9 @@ async def test_run_discord_investigation_noise_uses_grey_color(
     def _fake_execute(**_kw: Any) -> tuple[dict[str, Any], str, str, str]:
         return {"root_cause": "noise", "report": "benign", "is_noise": True}, "alert", "", ""
 
-    def _fake_followup(_app_id: str, _token: str, *, embeds: list[dict[str, Any]] | None = None, **_kw: Any) -> None:
+    def _fake_followup(
+        _app_id: str, _token: str, *, embeds: list[dict[str, Any]] | None = None, **_kw: Any
+    ) -> None:
         if embeds:
             posted_embeds.extend(embeds)
 
@@ -288,9 +324,9 @@ def test_discord_post_followup_sends_embeds(monkeypatch: pytest.MonkeyPatch) -> 
 
     captured: dict[str, Any] = {}
 
-    def _fake_post(url: str, *, json: dict[str, Any], **_kw: Any) -> MagicMock:
+    def _fake_post(url: str, *, json: dict[str, Any] | None = None, **_kw: Any) -> MagicMock:
         captured["url"] = url
-        captured["json"] = json
+        captured["payload"] = json
         resp = MagicMock()
         resp.status_code = 200
         return resp
@@ -301,7 +337,7 @@ def test_discord_post_followup_sends_embeds(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert "app-id" in captured["url"]
     assert "inter-token" in captured["url"]
-    assert captured["json"]["embeds"] == [{"title": "Result"}]
+    assert captured["payload"]["embeds"] == [{"title": "Result"}]
 
 
 def test_discord_post_followup_warns_on_non_200(monkeypatch: pytest.MonkeyPatch) -> None:
