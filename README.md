@@ -865,6 +865,13 @@ Thanks goes to these amazing people:
             <sub><b>GoDiao</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/7vignesh">
+            <img src="https://avatars.githubusercontent.com/u/97684755?v=4" width="100" alt="7vignesh"/>
+            <br />
+            <sub><b>7vignesh</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
