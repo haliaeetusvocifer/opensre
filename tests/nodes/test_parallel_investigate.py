@@ -1,10 +1,7 @@
 """Tests for parallel investigate hypothesis routing and merging."""
 
-import pytest
 from langgraph.constants import Send
 
-from app.nodes.investigate.execution.execute_actions import ActionExecutionResult
-from app.nodes.investigate.merge import merge_hypothesis_results
 from app.nodes.investigate.parallel import node_investigate_hypothesis
 from app.pipeline.routing import distribute_hypotheses
 from app.state.factory import make_initial_state
