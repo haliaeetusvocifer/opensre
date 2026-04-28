@@ -32,9 +32,7 @@ def test_capture_install_detected_if_needed_captures_once(monkeypatch, tmp_path:
     ]
 
 
-def test_capture_first_run_if_needed_uses_same_install_guard(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_capture_first_run_if_needed_uses_same_install_guard(monkeypatch, tmp_path: Path) -> None:
     stub = _StubAnalytics()
 
     monkeypatch.setattr(provider, "_FIRST_RUN_PATH", tmp_path / "installed")
@@ -46,9 +44,7 @@ def test_capture_first_run_if_needed_uses_same_install_guard(
     assert stub.events == [(Event.INSTALL_DETECTED, None)]
 
 
-def test_get_or_create_anonymous_id_reuses_persisted_value(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_get_or_create_anonymous_id_reuses_persisted_value(monkeypatch, tmp_path: Path) -> None:
     anonymous_id_path = tmp_path / "anonymous_id"
 
     monkeypatch.setattr(provider, "_CONFIG_DIR", tmp_path)
