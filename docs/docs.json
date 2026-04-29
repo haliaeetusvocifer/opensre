@@ -11,7 +11,6 @@
     "light": "#FFFFFF",
     "dark": "#000000"
   },
-  "favicon": "/favicon.ico",
   "styles": {
     "css": "/custom.css"
   },
@@ -207,8 +206,8 @@
   "navbar": {
     "links": [
       {
-        "label": "Try Tracer",
-        "href": "https://app.tracer.cloud/sign-up"
+        "label": "Try OpenSRE",
+        "href": "https://github.com/Tracer-Cloud/opensre"
       }
     ]
   },
@@ -256,5 +255,6 @@
   "logo": {
     "light": "/images/opensre-logo-black.svg",
     "dark": "/images/opensre-logo-white.svg"
-  }
+  },
+  "favicon": "/images/opensre-favicon.png"
 }
