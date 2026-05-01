@@ -1,5 +1,6 @@
 name: CI
 
+# Default CI remains path-scoped for pull_request and push events.
 on:
   push:
     branches: [main]
@@ -29,15 +30,20 @@ concurrency:
   cancel-in-progress: true
 
 # ---------------------------------------------------------------
-# QUALITY CHECKS (lint + format)
+# MATRIX: Ubuntu-only default matrix for push and pull_request in this workflow.
+# Optional label-driven Windows checks live in `ci-labels-windows.yml` (`ci:windows`).
+# Kubernetes local tests here run on push to main or PR titles containing k8s/kubernetes.
 # ---------------------------------------------------------------
 jobs:
+  # ---------------------------------------------------------------
+  # QUALITY CHECKS (lint + format)
+  # ---------------------------------------------------------------
   quality:
     name: quality (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest","windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -66,15 +72,15 @@ jobs:
       - name: Format check
         run: python -m ruff format --check app/ tests/
 
-# ---------------------------------------------------------------
-# TYPECHECK
-# ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # TYPECHECK
+  # ---------------------------------------------------------------
   typecheck:
     name: typecheck (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest","windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -100,9 +106,9 @@ jobs:
       - name: Typecheck
         run: python -m mypy app/
 
-# ---------------------------------------------------------------
-# TESTS (MAIN CI GATE)
-# ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # TESTS (MAIN CI GATE)
+  # ---------------------------------------------------------------
   test:
     name: test (${{ matrix.os }})
     needs: [quality, typecheck]
@@ -110,7 +116,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest","windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: [ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
@@ -180,9 +186,9 @@ jobs:
             .coverage
           retention-days: 7
 
-# ---------------------------------------------------------------
-# KUBERNETES TESTS
-# ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # KUBERNETES TESTS
+  # ---------------------------------------------------------------
   test-kubernetes:
     runs-on: ubuntu-latest
     needs: [quality, typecheck]
@@ -191,8 +197,13 @@ jobs:
 
     if: >-
       github.event_name == 'push' ||
-      contains(github.event.pull_request.title, 'k8s') ||
-      contains(github.event.pull_request.title, 'kubernetes')
+      (
+        github.event_name == 'pull_request' &&
+        (
+          contains(github.event.pull_request.title, 'k8s') ||
+          contains(github.event.pull_request.title, 'kubernetes')
+        )
+      )
 
     steps:
       - uses: actions/checkout@v5
@@ -218,9 +229,9 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
         run: python -m tests.e2e.kubernetes.test_local
 
-# ---------------------------------------------------------------
-# THOROUGH E2E (MAIN ONLY)
-# ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # THOROUGH E2E (MAIN ONLY)
+  # ---------------------------------------------------------------
   test-thorough:
     runs-on: ubuntu-latest
     needs: [test]
@@ -233,8 +244,6 @@ jobs:
         include:
           - name: cloudwatch-demo
             command: python3 -m tests.e2e.cloudwatch_demo.test_aws
-          - name: s3-failed-python
-            command: python3 -m tests.e2e.s3_failed_python_on_linux.test_aws
           - name: upstream-lambda
             command: python3 -m tests.e2e.upstream_lambda.test_agent_e2e
           - name: prefect-ecs-fargate

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [
-  { name = "Tracer Cloud", email = "support@tracer.cloud" },
+  { name = "OpenSRE", email = "support@opensre.com" },
 ]
 keywords = ["sre", "devops", "incident", "rca", "llm", "ai", "agent", "observability"]
 dependencies = [
@@ -43,6 +43,7 @@ dependencies = [
     "click>=8.1.0",
     "rich>=15.0.0",
     "questionary>=2.1.1",
+    "prompt_toolkit>=3.0.0",
     "PyYAML>=6.0",
     "tzdata>=2026.1",
     # OpenTelemetry

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import platform
+import sys
 import time
 
 import click
@@ -14,35 +15,10 @@ from app.analytics.cli import (
     capture_investigation_failed,
     capture_investigation_started,
 )
-from app.cli.constants import ALERT_TEMPLATE_CHOICES
-from app.cli.context import is_json_output, is_yes
-from app.cli.exit_codes import ERROR, SUCCESS
+from app.cli.support.constants import ALERT_TEMPLATE_CHOICES
+from app.cli.support.context import is_json_output, is_yes
+from app.cli.support.exit_codes import ERROR, SUCCESS
 from app.version import get_version
-
-
-def _build_investigate_argv(
-    *,
-    input_path: str | None,
-    input_json: str | None,
-    interactive: bool,
-    print_template: str | None,
-    output: str | None,
-    evaluate: bool = False,
-) -> list[str]:
-    argv: list[str] = []
-    if input_path is not None:
-        argv.extend(["--input", input_path])
-    if input_json is not None:
-        argv.extend(["--input-json", input_json])
-    if interactive:
-        argv.append("--interactive")
-    if print_template is not None:
-        argv.extend(["--print-template", print_template])
-    if output is not None:
-        argv.extend(["--output", output])
-    if evaluate:
-        argv.append("--evaluate")
-    return argv
 
 
 @click.command(name="update")
@@ -55,7 +31,7 @@ def _build_investigate_argv(
 @click.option("--yes", "-y", "local_yes", is_flag=True, help="Skip the confirmation prompt.")
 def update_command(check_only: bool, local_yes: bool) -> None:
     """Check for a newer version and update if one is available."""
-    from app.cli.update import run_update
+    from app.cli.support.update import run_update
 
     capture_cli_invoked()
     raise SystemExit(run_update(check_only=check_only, yes=local_yes or is_yes()))
@@ -89,7 +65,7 @@ def version_command() -> None:
 )
 def health_command(watch: bool, rate: int) -> None:
     """Show a quick health summary of the local agent setup."""
-    from app.cli.health_view import render_health_json, render_health_report
+    from app.cli.support.health_view import render_health_json, render_health_report
     from app.config import get_environment
     from app.integrations.store import STORE_PATH
     from app.integrations.verify import verify_integrations
@@ -200,14 +176,17 @@ def investigate_command(
         )
         return
     if slack_thread:
-        from app.cli.errors import OpenSREError
+        from app.cli.support.errors import OpenSREError
 
         raise OpenSREError(
             "--slack-thread requires --service.",
             suggestion="Pass --service <name> alongside --slack-thread CHANNEL/TS.",
         )
 
-    from app.main import main as investigate_main
+    from app.cli import write_json
+    from app.cli.investigation import run_investigation_cli, run_investigation_cli_streaming
+    from app.cli.investigation.alert_templates import build_alert_template
+    from app.cli.investigation.payload import load_payload
 
     capture_investigation_started(
         input_path=input_path,
@@ -215,25 +194,38 @@ def investigate_command(
         interactive=interactive,
     )
     try:
-        exit_code = investigate_main(
-            _build_investigate_argv(
-                input_path=input_path,
-                input_json=input_json,
-                interactive=interactive,
-                print_template=print_template,
-                output=output,
-                evaluate=evaluate,
-            )
+        if print_template:
+            write_json(build_alert_template(print_template), output)
+            capture_investigation_completed()
+            raise SystemExit(SUCCESS)
+
+        payload = load_payload(
+            input_path=input_path,
+            input_json=input_json,
+            interactive=interactive,
         )
+        # Only stream the live UI when the user is interactively watching stdout
+        # and hasn't asked for machine-readable JSON. Otherwise the spinner and
+        # ANSI control codes corrupt the JSON payload that consumers expect on
+        # stdout (pipes, redirection, --json, CI logs).
+        # --evaluate forces the non-streaming path because the streaming runner
+        # does not yet wire opensre_evaluate scoring through the renderer.
+        stream_to_stdout = (
+            sys.stdout.isatty() and not is_json_output() and output is None and not evaluate
+        )
+        if stream_to_stdout:
+            result = run_investigation_cli_streaming(raw_alert=payload)
+        else:
+            result = run_investigation_cli(raw_alert=payload, opensre_evaluate=evaluate)
+        write_json(result, output)
+    except SystemExit:
+        raise
     except Exception:
         capture_investigation_failed()
         raise
 
-    if exit_code == SUCCESS:
-        capture_investigation_completed()
-    else:
-        capture_investigation_failed()
-    raise SystemExit(exit_code)
+    capture_investigation_completed()
+    raise SystemExit(SUCCESS)
 
 
 def _run_service_investigation(
@@ -246,9 +238,9 @@ def _run_service_investigation(
     """Run a runtime investigation for a deployed service by name."""
     import os
 
-    from app.cli.args import write_json
-    from app.cli.errors import OpenSREError
-    from app.cli.investigate import run_investigation_cli
+    from app.cli.investigation import run_investigation_cli
+    from app.cli.support.args import write_json
+    from app.cli.support.errors import OpenSREError
     from app.remote.runtime_alert import build_runtime_alert_payload
 
     conflicting = [

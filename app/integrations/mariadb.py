@@ -14,7 +14,9 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
-from app.strict_config import StrictConfigModel
+from app.integrations._relational import RelationalConfigBase, env_bool, env_str
+from app.utils.coercion import safe_int
+from app.utils.truncation import truncate
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ DEFAULT_MARIADB_MAX_RESULTS = 50
 _QUERY_TRUNCATE_LEN = 200
 
 
-class MariaDBConfig(StrictConfigModel):
+class MariaDBConfig(RelationalConfigBase):
     """Normalized MariaDB connection settings."""
 
     host: str = ""
@@ -37,21 +39,6 @@ class MariaDBConfig(StrictConfigModel):
     max_results: int = Field(default=DEFAULT_MARIADB_MAX_RESULTS, gt=0, le=200)
     integration_id: str = ""
 
-    @field_validator("host", mode="before")
-    @classmethod
-    def _normalize_host(cls, value: Any) -> str:
-        return str(value or "").strip()
-
-    @field_validator("database", mode="before")
-    @classmethod
-    def _normalize_database(cls, value: Any) -> str:
-        return str(value or "").strip()
-
-    @field_validator("username", mode="before")
-    @classmethod
-    def _normalize_username(cls, value: Any) -> str:
-        return str(value or "").strip()
-
     @field_validator("password", mode="before")
     @classmethod
     def _normalize_password(cls, value: Any) -> str:
@@ -60,10 +47,7 @@ class MariaDBConfig(StrictConfigModel):
     @field_validator("port", mode="before")
     @classmethod
     def _normalize_port(cls, value: Any) -> int:
-        try:
-            return int(value)
-        except (ValueError, TypeError):
-            return DEFAULT_MARIADB_PORT
+        return safe_int(value, DEFAULT_MARIADB_PORT)
 
     @property
     def is_configured(self) -> bool:
@@ -85,17 +69,17 @@ def build_mariadb_config(raw: dict[str, Any] | None) -> MariaDBConfig:
 
 def mariadb_config_from_env() -> MariaDBConfig | None:
     """Load a MariaDB config from env vars."""
-    host = os.getenv("MARIADB_HOST", "").strip()
+    host = env_str("MARIADB_HOST")
     if not host:
         return None
     return build_mariadb_config(
         {
             "host": host,
-            "port": os.getenv("MARIADB_PORT", str(DEFAULT_MARIADB_PORT)).strip(),
-            "database": os.getenv("MARIADB_DATABASE", "").strip(),
-            "username": os.getenv("MARIADB_USERNAME", "").strip(),
+            "port": env_str("MARIADB_PORT", str(DEFAULT_MARIADB_PORT)),
+            "database": env_str("MARIADB_DATABASE"),
+            "username": env_str("MARIADB_USERNAME"),
             "password": os.getenv("MARIADB_PASSWORD", "").strip(),
-            "ssl": os.getenv("MARIADB_SSL", "true").strip().lower() in ("true", "1", "yes"),
+            "ssl": env_bool("MARIADB_SSL", True),
         }
     )
 
@@ -149,12 +133,6 @@ def validate_mariadb_config(config: MariaDBConfig) -> MariaDBValidationResult:
     except Exception as err:  # noqa: BLE001
         logger.debug("MariaDB validate_config failed", exc_info=True)
         return MariaDBValidationResult(ok=False, detail=f"MariaDB connection failed: {err}")
-
-
-def _truncate(text: str, max_len: int = _QUERY_TRUNCATE_LEN) -> str:
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "..."
 
 
 def mariadb_is_available(sources: dict[str, dict]) -> bool:
@@ -215,7 +193,7 @@ def get_process_list(
                             "command": row[4],
                             "time_secs": row[5] or 0,
                             "state": row[6] or "",
-                            "query": _truncate(row[7] or ""),
+                            "query": truncate(row[7] or "", _QUERY_TRUNCATE_LEN),
                         }
                     )
                 return {
@@ -360,7 +338,7 @@ def get_slow_queries(
                 for row in cur.fetchall():
                     queries.append(
                         {
-                            "digest_text": _truncate(row[0] or ""),
+                            "digest_text": truncate(row[0] or "", _QUERY_TRUNCATE_LEN),
                             "count": row[1] or 0,
                             "avg_time_ms": float(row[2]) if row[2] is not None else 0,
                             "total_time_ms": float(row[3]) if row[3] is not None else 0,
